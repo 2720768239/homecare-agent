@@ -1,0 +1,420 @@
+import type {
+  AgentRun,
+  Attachment,
+  Device,
+  FaultRecord,
+  Household,
+  ManualChunkSeed,
+  Reminder,
+  User,
+} from './types';
+import { calcWarrantyExpireDate, calcWarrantyStatus } from './warranty';
+
+export const USERS: User[] = [
+  {
+    id: 'user_home_a',
+    username: 'home_a',
+    displayName: '家庭成员 A',
+    householdId: 'household_default',
+  },
+  {
+    id: 'user_home_b',
+    username: 'home_b',
+    displayName: '家庭成员 B',
+    householdId: 'household_default',
+  },
+];
+
+export const PASSWORDS: Record<string, string> = {
+  home_a: 'home123456',
+  home_b: 'home123456',
+};
+
+export const HOUSEHOLD: Household = {
+  id: 'household_default',
+  name: '我的家',
+};
+
+function w(purchaseDate: string, months: number) {
+  const r = calcWarrantyStatus(purchaseDate, months);
+  return {
+    warrantyExpireDate: r.expireDate,
+    warrantyStatus: r.status,
+  };
+}
+
+// EXECUTION_PLAN §12.2 — 4 台 seed 设备
+export const SEED_DEVICES: Device[] = [
+  {
+    id: 'dev_xiaomi_water',
+    householdId: 'household_default',
+    name: '小米净水器 S1',
+    brand: '小米',
+    model: 'MRH-S1',
+    category: '厨房设备',
+    purchaseDate: '2026-06-20',
+    warrantyMonths: 24,
+    ...w('2026-06-20', 24),
+    serialNumber: 'XM-WATER-2026-0007',
+    purchaseChannel: '小米商城',
+    servicePhone: '400-100-5678',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-20T09:12:00Z',
+    updatedAt: '2026-06-20T09:12:00Z',
+  },
+  {
+    id: 'dev_roborock_p10',
+    householdId: 'household_default',
+    name: '石头扫地机器人 P10',
+    brand: '石头',
+    model: 'P10',
+    category: '清洁设备',
+    purchaseDate: '2024-07-20',
+    warrantyMonths: 24,
+    ...w('2024-07-20', 24),
+    serialNumber: 'RR-P10-2024-1182',
+    purchaseChannel: '京东',
+    servicePhone: '400-100-8888',
+    createdByUserId: 'user_home_a',
+    createdAt: '2024-07-22T10:00:00Z',
+    updatedAt: '2024-07-22T10:00:00Z',
+  },
+  {
+    id: 'dev_dyson_v12',
+    householdId: 'household_default',
+    name: '戴森吸尘器 V12',
+    brand: '戴森',
+    model: 'V12 Detect Slim',
+    category: '清洁设备',
+    purchaseDate: '2023-05-01',
+    warrantyMonths: 24,
+    ...w('2023-05-01', 24),
+    serialNumber: 'DY-V12-2023-55321',
+    purchaseChannel: '天猫',
+    servicePhone: '400-820-6728',
+    createdByUserId: 'user_home_b',
+    createdAt: '2023-05-03T08:30:00Z',
+    updatedAt: '2023-05-03T08:30:00Z',
+  },
+  {
+    id: 'dev_siemens_washer',
+    householdId: 'household_default',
+    name: '西门子洗衣机',
+    brand: '西门子',
+    model: 'WM12L2600W',
+    category: '厨房设备',
+    purchaseDate: undefined,
+    warrantyMonths: undefined,
+    warrantyStatus: 'unknown',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-25T14:00:00Z',
+    updatedAt: '2026-06-25T14:00:00Z',
+  },
+];
+
+// EXECUTION_PLAN §12.3
+export const SEED_ATTACHMENTS: Attachment[] = [
+  {
+    id: 'att_order_xiaomi',
+    householdId: 'household_default',
+    deviceId: 'dev_xiaomi_water',
+    filename: '订单截图.jpg',
+    mimeType: 'image/jpeg',
+    fileType: 'image',
+    attachmentType: 'order_screenshot',
+    sizeBytes: 839201,
+    url: '#mock/order_xiaomi.jpg',
+    parseStatus: 'parsed',
+    parseSummary: '识别到商品：小米净水器 S1，购买日期 2026-06-20，订单号 XM20260620',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-20T09:10:00Z',
+  },
+  {
+    id: 'att_manual_xiaomi',
+    householdId: 'household_default',
+    deviceId: 'dev_xiaomi_water',
+    filename: '小米净水器说明书.pdf',
+    mimeType: 'application/pdf',
+    fileType: 'pdf',
+    attachmentType: 'manual',
+    sizeBytes: 1240000,
+    url: '#mock/manual_xiaomi.pdf',
+    parseStatus: 'parsed',
+    parseSummary: '已索引说明书，共 24 页，覆盖滤芯清洗、错误代码、保养周期',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-20T09:11:00Z',
+  },
+  {
+    id: 'att_warranty_xiaomi',
+    householdId: 'household_default',
+    deviceId: 'dev_xiaomi_water',
+    filename: '保修卡.jpg',
+    mimeType: 'image/jpeg',
+    fileType: 'image',
+    attachmentType: 'warranty_card',
+    sizeBytes: 510000,
+    url: '#mock/warranty_xiaomi.jpg',
+    parseStatus: 'parsed',
+    parseSummary: '保修期 24 个月，售后电话 400-100-5678',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-20T09:11:30Z',
+  },
+  {
+    id: 'att_fault_dyson',
+    householdId: 'household_default',
+    deviceId: 'dev_dyson_v12',
+    filename: '故障照片.jpg',
+    mimeType: 'image/jpeg',
+    fileType: 'image',
+    attachmentType: 'device_photo',
+    sizeBytes: 720000,
+    url: '#mock/fault_dyson.jpg',
+    parseStatus: 'parsed',
+    parseSummary: '吸尘器滚刷位置可见缠绕毛发',
+    createdByUserId: 'user_home_b',
+    createdAt: '2026-06-28T18:20:00Z',
+  },
+];
+
+// 说明书 mock chunks（v0.1 用 seed chunks 替代向量检索）
+export const SEED_MANUAL_CHUNKS: ManualChunkSeed[] = [
+  {
+    deviceId: 'dev_xiaomi_water',
+    attachmentId: 'att_manual_xiaomi',
+    chunkIndex: 0,
+    pageNumber: 12,
+    section: '滤芯维护',
+    content:
+      '滤芯清洗：关闭进水阀并断开电源后，旋下滤芯外壳，取出滤芯用清水冲洗表面杂质，建议每 4 周清洗一次。请勿使用热水或腐蚀性清洁剂。',
+  },
+  {
+    deviceId: 'dev_xiaomi_water',
+    attachmentId: 'att_manual_xiaomi',
+    chunkIndex: 1,
+    pageNumber: 18,
+    section: '错误代码',
+    content:
+      'E1 表示进水异常，请检查水源是否打开、进水管是否弯折；E2 表示漏水报警，请立即关闭进水阀并联系售后。',
+  },
+  {
+    deviceId: 'dev_xiaomi_water',
+    attachmentId: 'att_manual_xiaomi',
+    chunkIndex: 2,
+    pageNumber: 20,
+    section: '保养周期',
+    content:
+      '建议每 6 个月更换一次 PP 棉滤芯，每 12 个月更换一次 RO 反渗透膜。日常使用应保持机身干燥，避免阳光直射。',
+  },
+];
+
+// EXECUTION_PLAN §12.4
+export const SEED_REMINDERS: Reminder[] = [
+  {
+    id: 'rem_filter_replace',
+    householdId: 'household_default',
+    deviceId: 'dev_xiaomi_water',
+    type: 'filter_replace',
+    title: '净水器滤芯更换提醒',
+    description: 'PP 棉滤芯建议每 6 个月更换',
+    dueDate: '2026-12-20',
+    status: 'pending',
+    source: 'manual',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-20T09:13:00Z',
+    updatedAt: '2026-06-20T09:13:00Z',
+  },
+  {
+    id: 'rem_roborock_warranty',
+    householdId: 'household_default',
+    deviceId: 'dev_roborock_p10',
+    type: 'warranty_expire',
+    title: '石头扫地机器人保修即将到期',
+    description: '保修将于 2026-07-20 到期',
+    dueDate: '2026-07-20',
+    status: 'pending',
+    source: 'agent',
+    createdByUserId: 'user_home_a',
+    createdAt: '2026-06-25T11:00:00Z',
+    updatedAt: '2026-06-25T11:00:00Z',
+  },
+  {
+    id: 'rem_dyson_clean',
+    householdId: 'household_default',
+    deviceId: 'dev_dyson_v12',
+    type: 'maintenance',
+    title: '吸尘器清洁提醒',
+    description: '建议每月清理滚刷和尘盒',
+    dueDate: '2026-07-15',
+    status: 'pending',
+    source: 'manual',
+    createdByUserId: 'user_home_b',
+    createdAt: '2026-06-28T18:22:00Z',
+    updatedAt: '2026-06-28T18:22:00Z',
+  },
+];
+
+export const SEED_FAULT_RECORDS: FaultRecord[] = [
+  {
+    id: 'fault_dyson_brush',
+    householdId: 'household_default',
+    deviceId: 'dev_dyson_v12',
+    agentRunId: 'run_leak_check',
+    type: 'troubleshooting',
+    title: '吸尘器滚刷缠绕',
+    symptom: '滚刷转动异响，吸力下降',
+    riskLevel: 'low',
+    summary: '用户反馈滚刷位置异响，建议清理缠绕毛发并检查滚刷。',
+    serviceScript:
+      '您好，我的戴森 V12 吸尘器滚刷位置有异响，吸力下降，已按建议清理滚刷缠绕毛发，问题仍存在，请问是否需要送修？',
+    occurredAt: '2026-06-28T18:25:00Z',
+    createdByUserId: 'user_home_b',
+    createdAt: '2026-06-28T18:30:00Z',
+  },
+];
+
+// EXECUTION_PLAN §12.5 — Agent Runs 覆盖等待确认 / 已完成 / 失败
+export const SEED_AGENT_RUNS: AgentRun[] = [
+  {
+    id: 'run_leak_check',
+    householdId: 'household_default',
+    createdByUserId: 'user_home_a',
+    intent: 'troubleshooting',
+    userInput: '净水器漏水了怎么办',
+    status: 'completed',
+    deviceId: 'dev_xiaomi_water',
+    resultType: 'troubleshooting_result',
+    result: {
+      type: 'troubleshooting_result',
+      troubleshooting: {
+        deviceId: 'dev_xiaomi_water',
+        deviceName: '小米净水器 S1',
+        warrantyStatus: 'active',
+        riskLevel: 'low',
+        safetyAlert: {
+          level: 'warning',
+          title: '安全提醒',
+          message: '先关闭进水阀并断开电源，再检查漏水位置。',
+        },
+        actions: ['关闭进水阀', '擦干周围水渍', '拍照记录漏水位置'],
+        supportMessage:
+          '您好，我的小米净水器 S1 出现漏水，已关闭进水阀并拍照，序列号 XM-WATER-2026-0007，请问如何安排上门检测？',
+        materials: ['订单截图', '设备序列号', '故障照片'],
+        canSaveRecord: true,
+      },
+    },
+    nodePath: [
+      { name: 'input_normalize', status: 'completed', summary: '解析用户输入' },
+      { name: 'intent_classify', status: 'completed', summary: '识别为故障售后' },
+      { name: 'resolve_device_context', status: 'completed', summary: '命中净水器' },
+      { name: 'safety_check', status: 'completed', summary: '普通风险' },
+      { name: 'generate_troubleshooting_result', status: 'completed', summary: '生成排查步骤' },
+      { name: 'persist_agent_run', status: 'completed', summary: '已记录' },
+    ],
+    createdAt: '2026-06-26T10:00:00Z',
+    updatedAt: '2026-06-26T10:02:00Z',
+  },
+  {
+    id: 'run_filter_qa',
+    householdId: 'household_default',
+    createdByUserId: 'user_home_a',
+    intent: 'manual_qa',
+    userInput: '滤芯怎么清洗',
+    status: 'completed',
+    deviceId: 'dev_xiaomi_water',
+    resultType: 'manual_answer',
+    result: {
+      type: 'manual_answer',
+      manualAnswer: {
+        summary: '滤芯清洗前请先关闭进水阀并断开电源，取出滤芯用清水冲洗。',
+        steps: ['关闭进水阀', '断开电源', '旋下滤芯外壳取出滤芯', '用清水冲洗表面杂质'],
+        sources: [
+          {
+            attachmentId: 'att_manual_xiaomi',
+            fileName: '小米净水器说明书.pdf',
+            pageNumber: 12,
+            section: '滤芯维护',
+            snippet:
+              '滤芯清洗：关闭进水阀并断开电源后，旋下滤芯外壳，取出滤芯用清水冲洗表面杂质，建议每 4 周清洗一次。',
+          },
+        ],
+      },
+    },
+    nodePath: [
+      { name: 'input_normalize', status: 'completed', summary: '解析用户输入' },
+      { name: 'intent_classify', status: 'completed', summary: '识别为说明书问答' },
+      { name: 'resolve_device_context', status: 'completed', summary: '命中净水器' },
+      { name: 'check_manual_exists', status: 'completed', summary: '存在说明书' },
+      { name: 'retrieve_manual_chunks', status: 'completed', summary: '命中 1 条片段' },
+      { name: 'persist_agent_run', status: 'completed', summary: '已记录' },
+    ],
+    createdAt: '2026-06-27T09:30:00Z',
+    updatedAt: '2026-06-27T09:30:30Z',
+  },
+  {
+    id: 'run_warranty_failed',
+    householdId: 'household_default',
+    createdByUserId: 'user_home_b',
+    intent: 'warranty_check',
+    userInput: '洗衣机还在保修吗',
+    status: 'failed',
+    deviceId: 'dev_siemens_washer',
+    errorMessage: '缺少购买日期和保修期，无法计算保修状态',
+    nodePath: [
+      { name: 'input_normalize', status: 'completed', summary: '解析用户输入' },
+      { name: 'intent_classify', status: 'completed', summary: '识别为保修查询' },
+      { name: 'resolve_device_context', status: 'completed', summary: '命中洗衣机' },
+      { name: 'calculate_warranty_status', status: 'failed', summary: '缺少购买日期与保修期' },
+    ],
+    createdAt: '2026-06-29T16:00:00Z',
+    updatedAt: '2026-06-29T16:00:10Z',
+  },
+  {
+    id: 'run_draft_pending',
+    householdId: 'household_default',
+    createdByUserId: 'user_home_a',
+    intent: 'create_device',
+    userInput: '帮我建档',
+    status: 'waiting_confirmation',
+    currentNode: 'wait_user_confirmation',
+    waitingFor: 'device_draft_confirmation',
+    attachmentIds: ['att_order_xiaomi', 'att_manual_xiaomi'],
+    resultType: 'device_draft',
+    result: {
+      type: 'device_draft',
+      message: '我从你上传的资料中识别到一台设备，请确认。',
+      deviceDraft: {
+        id: 'draft_seed_001',
+        name: '小米净水器 S1',
+        brand: '小米',
+        model: 'MRH-S1',
+        category: '厨房设备',
+        purchaseDate: '2026-06-20',
+        warrantyMonths: 24,
+        warrantyExpireDate: calcWarrantyExpireDate('2026-06-20', 24),
+        serialNumber: undefined,
+        purchaseChannel: '小米商城',
+        confidence: 0.86,
+        missingFields: ['serial_number'],
+        sourceAttachmentIds: ['att_order_xiaomi', 'att_manual_xiaomi'],
+        suggestedReminders: [
+          {
+            type: 'warranty_expire',
+            title: '小米净水器 S1 保修即将到期',
+            dueDate: '2028-05-21',
+          },
+        ],
+        status: 'pending_confirmation',
+      },
+    },
+    nodePath: [
+      { name: 'input_normalize', status: 'completed', summary: '解析用户输入' },
+      { name: 'intent_classify', status: 'completed', summary: '识别为自动建档' },
+      { name: 'load_attachments', status: 'completed', summary: '加载 2 个附件' },
+      { name: 'extract_device_info', status: 'completed', summary: '提取设备字段' },
+      { name: 'normalize_device_draft', status: 'completed', summary: '生成设备草稿' },
+      { name: 'wait_user_confirmation', status: 'completed', summary: '等待用户确认' },
+    ],
+    createdAt: '2026-06-30T15:00:00Z',
+    updatedAt: '2026-06-30T15:00:20Z',
+  },
+];

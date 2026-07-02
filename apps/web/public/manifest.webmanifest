@@ -1,0 +1,11 @@
+{
+  "name": "HomeCare Agent",
+  "short_name": "HomeCare",
+  "description": "移动端 Agent-first 家庭设备档案助手",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#FFFFFF",
+  "orientation": "portrait",
+  "icons": []
+}
