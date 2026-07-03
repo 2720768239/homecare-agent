@@ -37,14 +37,6 @@ app.include_router(agent_runs.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 
 
-@app.on_event("startup")
-def startup_seed():
-    """Seed in-memory data on startup."""
-    # The Store singleton auto-seeds on import, but we re-seed to be safe
-    from app.db.store import store
-    store.reset()
-
-
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": app_settings.API_TITLE, "version": app_settings.API_VERSION}

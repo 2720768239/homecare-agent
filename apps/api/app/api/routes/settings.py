@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
+from app.db.session import get_db
 from app.db.store import store
 from app.schemas import SettingsModel
 
@@ -19,12 +21,12 @@ def get_settings(userId: str = "user_home_a"):
 
 
 @router.get("/export")
-def export_data():
-    data = store.export_data()
+def export_data(db: Session = Depends(get_db)):
+    data = store.export_data(db)
     return JSONResponse(content=json.loads(data))
 
 
 @router.post("/reset")
-def reset_demo_data():
-    store.reset()
+def reset_demo_data(db: Session = Depends(get_db)):
+    store.reset(db)
     return {"ok": True, "message": "Demo data has been reset."}

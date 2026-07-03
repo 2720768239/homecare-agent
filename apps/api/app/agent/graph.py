@@ -10,8 +10,10 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from langgraph.graph import END, StateGraph
+from sqlalchemy.orm import Session
 
 from app.agent.state import AgentIntent, AgentState
+from app.db.database import SessionLocal
 from app.db.store import store
 from app.services.intent_service import classify_intent, intent_label
 from app.services.safety_service import (
@@ -72,8 +74,15 @@ def _extract_keywords(text: str) -> list[str]:
     return list(keywords)
 
 
-def _resolve_device(input_text: str, context_device_id: Optional[str] = None):
-    devices = store.list_devices()
+def _db(state: AgentState) -> Session:
+    db = (state.get("_ctx") or {}).get("db")
+    if db is None:
+        raise RuntimeError("Database session missing from agent state")
+    return db
+
+
+def _resolve_device(db: Session, input_text: str, context_device_id: Optional[str] = None):
+    devices = store.list_devices(db)
     if context_device_id:
         d = next((x for x in devices if x["id"] == context_device_id), None)
         return {"device": d, "ambiguous": False, "candidates": None}
@@ -136,7 +145,7 @@ def intent_classify(state: AgentState) -> dict:
 def resolve_device_context(state: AgentState) -> dict:
     text = state.get("user_input", "")
     ctx_id = state.get("device_id")
-    res = _resolve_device(text, ctx_id)
+    res = _resolve_device(_db(state), text, ctx_id)
     device = res["device"]
     ambiguous = res["ambiguous"]
     candidates = res.get("candidates")
@@ -191,6 +200,7 @@ def route_by_intent(state: AgentState) -> str:
 # ── create_device flow ──────────────────────────────────────────────────
 
 def create_device_flow(state: AgentState) -> dict:
+    db = _db(state)
     att_ids = state.get("attachment_ids", [])
     node_path = state.get("node_path", [])
 
@@ -198,7 +208,7 @@ def create_device_flow(state: AgentState) -> dict:
 
     attachments = []
     for aid in att_ids:
-        a = store.get_attachment(aid)
+        a = store.get_attachment(db, aid)
         if a:
             attachments.append(a)
 
@@ -287,6 +297,7 @@ def _mock_extract_device_fields(attachments: list[dict]) -> dict:
 # ── manual_qa flow ──────────────────────────────────────────────────────
 
 def manual_qa_flow(state: AgentState) -> dict:
+    db = _db(state)
     ctx = state.get("_ctx") or {}
     node_path = state.get("node_path", [])
     device = ctx.get("_resolved_device")
@@ -294,7 +305,7 @@ def manual_qa_flow(state: AgentState) -> dict:
     candidates = ctx.get("_candidates")
 
     if ambiguous or (not device and not state.get("device_id")):
-        cands = (candidates or store.list_devices()[:3])
+        cands = (candidates or store.list_devices(db)[:3])
         node_path.append(_node("wait_device_selection", "completed", "等待用户选择设备"))
         return {
             "status": "waiting_confirmation",
@@ -323,9 +334,9 @@ def manual_qa_flow(state: AgentState) -> dict:
     device_id = device["id"]
     node_path.append(_node("check_manual_exists", "completed"))
 
-    chunks = store.get_manual_chunks(device_id)
+    chunks = store.get_manual_chunks(db, device_id)
     manual_att = None
-    for a in store.list_attachments_by_device(device_id):
+    for a in store.list_attachments_by_device(db, device_id):
         if a.get("attachmentType") == "manual":
             manual_att = a
             break
@@ -401,6 +412,7 @@ def manual_qa_flow(state: AgentState) -> dict:
 # ── warranty_check flow ─────────────────────────────────────────────────
 
 def warranty_check_flow(state: AgentState) -> dict:
+    db = _db(state)
     ctx = state.get("_ctx") or {}
     node_path = state.get("node_path", [])
     device = ctx.get("_resolved_device")
@@ -408,7 +420,7 @@ def warranty_check_flow(state: AgentState) -> dict:
     candidates = ctx.get("_candidates")
 
     if ambiguous or (not device and not state.get("device_id")):
-        cands = candidates or store.list_devices()[:3]
+        cands = candidates or store.list_devices(db)[:3]
         node_path.append(_node("wait_device_selection", "completed", "等待用户选择设备"))
         return {
             "status": "waiting_confirmation",
@@ -470,6 +482,7 @@ def warranty_check_flow(state: AgentState) -> dict:
 # ── troubleshooting flow ────────────────────────────────────────────────
 
 def troubleshooting_flow(state: AgentState) -> dict:
+    db = _db(state)
     ctx = state.get("_ctx") or {}
     node_path = state.get("node_path", [])
     device = ctx.get("_resolved_device")
@@ -501,7 +514,7 @@ def troubleshooting_flow(state: AgentState) -> dict:
         }
 
     if ambiguous or (not device and not state.get("device_id")):
-        cands = candidates or store.list_devices()[:3]
+        cands = candidates or store.list_devices(db)[:3]
         node_path.append(_node("wait_device_selection", "completed", "等待用户选择设备"))
         return {
             "status": "waiting_confirmation",
@@ -657,53 +670,57 @@ def run_agent(
     attachment_ids: Optional[list[str]] = None,
     user_id: str = "user_home_a",
     intent_hint: Optional[str] = None,
+    db: Optional[Session] = None,
 ) -> dict:
     """Execute the LangGraph agent and return an AgentRun dict."""
 
-    now = _now_iso()
-    initial_state: AgentState = {
-        "user_input": user_input,
-        "device_id": device_id,
-        "attachment_ids": attachment_ids or [],
-        "user_id": user_id,
-        "intent_hint": intent_hint,
-        "node_path": [],
-        "status": "running",
-        "result": None,
-        "_ctx": {},
-        "waiting_for": None,
-        "error_message": None,
-    }
+    def _execute(session: Session) -> dict:
+        now = _now_iso()
+        initial_state: AgentState = {
+            "user_input": user_input,
+            "device_id": device_id,
+            "attachment_ids": attachment_ids or [],
+            "user_id": user_id,
+            "intent_hint": intent_hint,
+            "node_path": [],
+            "status": "running",
+            "result": None,
+            "_ctx": {"db": session},
+            "waiting_for": None,
+            "error_message": None,
+        }
 
-    # Run the graph
-    final_state = compiled_graph.invoke(initial_state)
+        final_state = compiled_graph.invoke(initial_state)
 
-    # Build AgentRun dict
-    run = {
-        "id": _gen_id("run"),
-        "householdId": "household_default",
-        "createdByUserId": user_id,
-        "intent": final_state.get("intent", "unknown"),
-        "userInput": user_input,
-        "status": final_state.get("status", "failed"),
-        "deviceId": final_state.get("device_id"),
-        "waitingFor": final_state.get("waiting_for"),
-        "resultType": (final_state.get("result") or {}).get("type"),
-        "result": final_state.get("result"),
-        "nodePath": final_state.get("node_path", []),
-        "errorMessage": final_state.get("error_message"),
-        "attachmentIds": attachment_ids or [],
-        "context": {"deviceId": device_id} if device_id else None,
-        "createdAt": now,
-        "updatedAt": _now_iso(),
-    }
+        run = {
+            "id": _gen_id("run"),
+            "householdId": "household_default",
+            "createdByUserId": user_id,
+            "intent": final_state.get("intent", "unknown"),
+            "userInput": user_input,
+            "status": final_state.get("status", "failed"),
+            "deviceId": final_state.get("device_id"),
+            "waitingFor": final_state.get("waiting_for"),
+            "resultType": (final_state.get("result") or {}).get("type"),
+            "result": final_state.get("result"),
+            "nodePath": final_state.get("node_path", []),
+            "errorMessage": final_state.get("error_message"),
+            "attachmentIds": attachment_ids or [],
+            "context": {"deviceId": device_id} if device_id else None,
+            "createdAt": now,
+            "updatedAt": _now_iso(),
+        }
 
-    if run["status"] == "waiting_confirmation":
-        run["currentNode"] = "wait_user_confirmation"
+        if run["status"] == "waiting_confirmation":
+            run["currentNode"] = "wait_user_confirmation"
 
-    # Persist
-    store.upsert_agent_run(run)
-    return run
+        store.upsert_agent_run(session, run)
+        return store.get_agent_run(session, run["id"])
+
+    if db is not None:
+        return _execute(db)
+    with SessionLocal() as session:
+        return _execute(session)
 
 
 def confirm_agent_run(
@@ -712,193 +729,194 @@ def confirm_agent_run(
     user_id: str = "user_home_a",
     device_id: Optional[str] = None,
     patch: Optional[dict] = None,
+    db: Optional[Session] = None,
 ) -> dict:
     """Handle user confirmation actions on an existing AgentRun."""
 
-    run = store.get_agent_run(run_id)
-    if not run:
-        raise KeyError(f"Run {run_id} not found")
+    def _execute(session: Session) -> dict:
+        run = store.get_agent_run(session, run_id)
+        if not run:
+            raise KeyError(f"Run {run_id} not found")
 
-    now = _now_iso()
+        now = _now_iso()
 
-    if action == "cancel_device_draft":
-        run["status"] = "cancelled"
-        run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", "用户取消")]
-        run["updatedAt"] = now
-        store.upsert_agent_run(run)
-        return run
-
-    if action == "cancel_fault_record":
-        run["status"] = "completed"
-        run["waitingFor"] = None
-        run["currentNode"] = None
-        result = run.get("result") or {}
-        if result.get("troubleshooting"):
-            run["result"] = {**result, "type": "troubleshooting_result"}
-            run["resultType"] = "troubleshooting_result"
-        run["nodePath"] = run.get("nodePath", []) + [_node("wait_save_record_confirmation", "skipped", "用户取消保存")]
-        run["updatedAt"] = now
-        store.upsert_agent_run(run)
-        return run
-
-    if action == "modify_device_draft":
-        result = run.get("result") or {}
-        draft = result.get("deviceDraft")
-        if draft and patch:
-            draft.update(patch)
-            draft["status"] = "modified"
-            run["result"] = {**result, "type": "device_draft", "deviceDraft": draft}
-            run["resultType"] = "device_draft"
-        run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", "用户修改草稿")]
-        run["updatedAt"] = now
-        store.upsert_agent_run(run)
-        return run
-
-    if action == "confirm_device_draft":
-        result = run.get("result") or {}
-        draft = result.get("deviceDraft")
-        if not draft:
-            run["status"] = "failed"
-            run["errorMessage"] = "草稿不存在"
-            run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "failed", "草稿不存在")]
-            store.upsert_agent_run(run)
+        if action == "cancel_device_draft":
+            run["status"] = "cancelled"
+            run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", "用户取消")]
+            run["updatedAt"] = now
+            store.upsert_agent_run(session, run)
             return run
 
-        if patch:
-            draft.update(patch)
-        run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", "用户已确认")]
+        if action == "cancel_fault_record":
+            run["status"] = "completed"
+            run["waitingFor"] = None
+            run["currentNode"] = None
+            result = run.get("result") or {}
+            if result.get("troubleshooting"):
+                run["result"] = {**result, "type": "troubleshooting_result"}
+                run["resultType"] = "troubleshooting_result"
+            run["nodePath"] = run.get("nodePath", []) + [_node("wait_save_record_confirmation", "skipped", "用户取消保存")]
+            run["updatedAt"] = now
+            store.upsert_agent_run(session, run)
+            return run
 
-        # Create device
-        device = store.create_device({
-            "name": draft.get("name"),
-            "brand": draft.get("brand"),
-            "model": draft.get("model"),
-            "category": draft.get("category"),
-            "purchaseDate": draft.get("purchaseDate"),
-            "warrantyMonths": draft.get("warrantyMonths"),
-            "serialNumber": draft.get("serialNumber"),
-            "purchaseChannel": draft.get("purchaseChannel"),
-        }, user_id)
-        run["nodePath"].append(_node("create_device", "completed", f"已创建设备 {device['id']}"))
+        if action == "modify_device_draft":
+            result = run.get("result") or {}
+            draft = result.get("deviceDraft")
+            if draft and patch:
+                draft.update(patch)
+                draft["status"] = "modified"
+                run["result"] = {**result, "type": "device_draft", "deviceDraft": draft}
+                run["resultType"] = "device_draft"
+            run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", "用户修改草稿")]
+            run["updatedAt"] = now
+            store.upsert_agent_run(session, run)
+            return run
 
-        # Bind attachments
-        source_ids = draft.get("sourceAttachmentIds", [])
-        if source_ids:
-            store.bind_attachments_to_device(source_ids, device["id"])
-            run["nodePath"].append(_node("attach_files_to_device", "completed", f"绑定 {len(source_ids)} 个附件"))
+        if action == "confirm_device_draft":
+            result = run.get("result") or {}
+            draft = result.get("deviceDraft")
+            if not draft:
+                run["status"] = "failed"
+                run["errorMessage"] = "草稿不存在"
+                run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "failed", "草稿不存在")]
+                store.upsert_agent_run(session, run)
+                return run
 
-        # Create warranty reminder
-        reminder = None
-        suggested = draft.get("suggestedReminders", [])
-        if suggested and device.get("warrantyExpireDate"):
-            s = suggested[0]
-            reminder = store.create_reminder({
-                "deviceId": device["id"],
-                "type": "warranty_expire",
-                "title": s.get("title"),
-                "dueDate": s.get("dueDate"),
-                "description": f"保修将于 {device['warrantyExpireDate']} 到期",
-                "sourceAgentRunId": run_id,
+            if patch:
+                draft.update(patch)
+            run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", "用户已确认")]
+
+            device = store.create_device(session, {
+                "name": draft.get("name"),
+                "brand": draft.get("brand"),
+                "model": draft.get("model"),
+                "category": draft.get("category"),
+                "purchaseDate": draft.get("purchaseDate"),
+                "warrantyMonths": draft.get("warrantyMonths"),
+                "serialNumber": draft.get("serialNumber"),
+                "purchaseChannel": draft.get("purchaseChannel"),
             }, user_id)
-            run["nodePath"].append(_node("create_warranty_reminder", "completed", "已创建保修提醒"))
-        else:
-            run["nodePath"].append(_node("create_warranty_reminder", "skipped", "无保修截止日"))
+            run["nodePath"].append(_node("create_device", "completed", f"已创建设备 {device['id']}"))
 
-        # Index manual if exists
-        manual_att = None
-        for aid in source_ids:
-            a = store.get_attachment(aid)
-            if a and a.get("attachmentType") == "manual":
-                manual_att = a
-                break
-        if manual_att:
-            store.add_manual_chunk({
-                "deviceId": device["id"],
-                "attachmentId": manual_att["id"],
-                "chunkIndex": 0,
-                "pageNumber": 1,
-                "section": "使用说明",
-                "content": f"{device['name']} 使用说明：请按说明书指引安装与使用，定期清洁保养。如有异常请先断电并联系官方售后。",
-            })
-            run["nodePath"].append(_node("index_manual_if_exists", "completed", "已索引说明书"))
-        else:
-            run["nodePath"].append(_node("index_manual_if_exists", "skipped", "无说明书"))
+            source_ids = draft.get("sourceAttachmentIds", [])
+            if source_ids:
+                store.bind_attachments_to_device(session, source_ids, device["id"])
+                run["nodePath"].append(_node("attach_files_to_device", "completed", f"绑定 {len(source_ids)} 个附件"))
 
-        attachments = [store.get_attachment(aid) for aid in source_ids]
-        attachments = [a for a in attachments if a]
+            reminder = None
+            suggested = draft.get("suggestedReminders", [])
+            if suggested and device.get("warrantyExpireDate"):
+                s = suggested[0]
+                reminder = store.create_reminder(session, {
+                    "deviceId": device["id"],
+                    "type": "warranty_expire",
+                    "title": s.get("title"),
+                    "dueDate": s.get("dueDate"),
+                    "description": f"保修将于 {device['warrantyExpireDate']} 到期",
+                    "sourceAgentRunId": run_id,
+                }, user_id)
+                run["nodePath"].append(_node("create_warranty_reminder", "completed", "已创建保修提醒"))
+            else:
+                run["nodePath"].append(_node("create_warranty_reminder", "skipped", "无保修截止日"))
 
-        run["status"] = "completed"
-        run["deviceId"] = device["id"]
-        run["result"] = {
-            "type": "device_create_success",
-            "device": device,
-            "attachments": attachments,
-            "reminder": reminder,
-            "message": f"已创建设备「{device['name']}」，绑定 {len(attachments)} 个附件，并生成保修提醒。",
-        }
-        run["resultType"] = "device_create_success"
-        run["nodePath"].append(_node("final_response", "completed", "建档完成"))
-        run["updatedAt"] = _now_iso()
-        store.upsert_agent_run(run)
-        return run
+            manual_att = None
+            for aid in source_ids:
+                a = store.get_attachment(session, aid)
+                if a and a.get("attachmentType") == "manual":
+                    manual_att = a
+                    break
+            if manual_att:
+                store.add_manual_chunk(session, {
+                    "deviceId": device["id"],
+                    "attachmentId": manual_att["id"],
+                    "chunkIndex": 0,
+                    "pageNumber": 1,
+                    "section": "使用说明",
+                    "content": f"{device['name']} 使用说明：请按说明书指引安装与使用，定期清洁保养。如有异常请先断电并联系官方售后。",
+                })
+                run["nodePath"].append(_node("index_manual_if_exists", "completed", "已索引说明书"))
+            else:
+                run["nodePath"].append(_node("index_manual_if_exists", "skipped", "无说明书"))
 
-    if action == "select_device":
-        if not device_id:
-            run["status"] = "failed"
-            run["errorMessage"] = "未选择设备"
-            store.upsert_agent_run(run)
+            attachments = [store.get_attachment(session, aid) for aid in source_ids]
+            attachments = [a for a in attachments if a]
+
+            run["status"] = "completed"
+            run["deviceId"] = device["id"]
+            run["result"] = {
+                "type": "device_create_success",
+                "device": device,
+                "attachments": attachments,
+                "reminder": reminder,
+                "message": f"已创建设备「{device['name']}」，绑定 {len(attachments)} 个附件，并生成保修提醒。",
+            }
+            run["resultType"] = "device_create_success"
+            run["nodePath"].append(_node("final_response", "completed", "建档完成"))
+            run["updatedAt"] = _now_iso()
+            store.upsert_agent_run(session, run)
             return run
 
-        run["deviceId"] = device_id
-        run["context"] = {**(run.get("context") or {}), "deviceId": device_id}
-        run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", f"用户选择设备 {device_id}")]
+        if action == "select_device":
+            if not device_id:
+                run["status"] = "failed"
+                run["errorMessage"] = "未选择设备"
+                store.upsert_agent_run(session, run)
+                return run
 
-        # Re-run the flow with the selected device
-        new_run = run_agent(
-            user_input=run["userInput"],
-            device_id=device_id,
-            attachment_ids=run.get("attachmentIds"),
-            user_id=user_id,
-            intent_hint=run.get("intent"),
-        )
-        # Merge the nodePath
-        run["nodePath"].extend(new_run.get("nodePath", []))
-        run["status"] = new_run["status"]
-        run["result"] = new_run["result"]
-        run["resultType"] = new_run.get("resultType")
-        run["waitingFor"] = new_run.get("waitingFor")
-        run["errorMessage"] = new_run.get("errorMessage")
-        run["updatedAt"] = _now_iso()
-        store.upsert_agent_run(run)
-        return run
+            run["deviceId"] = device_id
+            run["context"] = {**(run.get("context") or {}), "deviceId": device_id}
+            run["nodePath"] = run.get("nodePath", []) + [_node("apply_user_confirmation", "completed", f"用户选择设备 {device_id}")]
 
-    if action == "save_fault_record":
-        result = run.get("result") or {}
-        tr = result.get("troubleshooting")
-        if not tr:
-            run["status"] = "failed"
-            run["errorMessage"] = "没有可保存的故障结果"
-            store.upsert_agent_run(run)
+            new_run = run_agent(
+                user_input=run["userInput"],
+                device_id=device_id,
+                attachment_ids=run.get("attachmentIds"),
+                user_id=user_id,
+                intent_hint=run.get("intent"),
+                db=session,
+            )
+            run["nodePath"].extend(new_run.get("nodePath", []))
+            run["status"] = new_run["status"]
+            run["result"] = new_run["result"]
+            run["resultType"] = new_run.get("resultType")
+            run["waitingFor"] = new_run.get("waitingFor")
+            run["errorMessage"] = new_run.get("errorMessage")
+            run["updatedAt"] = _now_iso()
+            store.upsert_agent_run(session, run)
             return run
 
-        fr = store.create_fault_record({
-            "deviceId": tr["deviceId"],
-            "agentRunId": run_id,
-            "type": "troubleshooting",
-            "title": f"{tr['deviceName']} 故障记录",
-            "symptom": run["userInput"],
-            "riskLevel": tr["riskLevel"],
-            "summary": "；".join(tr.get("actions", [])),
-            "serviceScript": tr.get("supportMessage"),
-        }, user_id)
+        if action == "save_fault_record":
+            result = run.get("result") or {}
+            tr = result.get("troubleshooting")
+            if not tr:
+                run["status"] = "failed"
+                run["errorMessage"] = "没有可保存的故障结果"
+                store.upsert_agent_run(session, run)
+                return run
 
-        run["status"] = "completed"
-        run["result"] = {**result, "type": "fault_record_saved", "faultRecord": fr}
-        run["resultType"] = "fault_record_saved"
-        run["nodePath"] = run.get("nodePath", []) + [_node("save_maintenance_record", "completed", "已保存故障记录")]
-        run["updatedAt"] = _now_iso()
-        store.upsert_agent_run(run)
+            fr = store.create_fault_record(session, {
+                "deviceId": tr["deviceId"],
+                "agentRunId": run_id,
+                "type": "troubleshooting",
+                "title": f"{tr['deviceName']} 故障记录",
+                "symptom": run["userInput"],
+                "riskLevel": tr["riskLevel"],
+                "summary": "；".join(tr.get("actions", [])),
+                "serviceScript": tr.get("supportMessage"),
+            }, user_id)
+
+            run["status"] = "completed"
+            run["result"] = {**result, "type": "fault_record_saved", "faultRecord": fr}
+            run["resultType"] = "fault_record_saved"
+            run["nodePath"] = run.get("nodePath", []) + [_node("save_maintenance_record", "completed", "已保存故障记录")]
+            run["updatedAt"] = _now_iso()
+            store.upsert_agent_run(session, run)
+            return run
+
         return run
 
-    # Unknown action — return as-is
-    return run
+    if db is not None:
+        return _execute(db)
+    with SessionLocal() as session:
+        return _execute(session)

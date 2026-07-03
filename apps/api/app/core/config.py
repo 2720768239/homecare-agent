@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from dataclasses import dataclass, field
+
+_API_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_database_url() -> str:
+    if url := os.getenv("DATABASE_URL"):
+        return url
+    db_file = _API_ROOT / "data" / "homecare-agent.db"
+    return f"sqlite:///{db_file.as_posix()}"
 
 
 @dataclass
@@ -11,6 +23,7 @@ class Settings:
     API_VERSION: str = "0.1.0"
     HOUSEHOLD_ID: str = "household_default"
     MOCK_AUTH: bool = True  # v0.1 always true
+    DATABASE_URL: str = field(default_factory=_default_database_url)
 
     ALLOWED_USERS: dict[str, dict[str, str]] = field(default_factory=lambda: {
         "home_a": {

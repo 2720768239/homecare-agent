@@ -6,6 +6,8 @@
     "postinstall": "npm run install:web && npm run install:api",
     "install:web": "npm install --prefix apps/web",
     "install:api": "node scripts/install-api.mjs",
+    "db:migrate": "cd apps/api && .venv\\Scripts\\python.exe -m alembic upgrade head",
+    "db:seed": "cd apps/api && .venv\\Scripts\\python.exe -m app.db.seed_runtime",
     "dev": "node scripts/dev.mjs",
     "dev:api": "cd apps/api && .venv\\Scripts\\python.exe -m uvicorn main:app --reload --port 8000",
     "build": "npm run build --prefix apps/web",

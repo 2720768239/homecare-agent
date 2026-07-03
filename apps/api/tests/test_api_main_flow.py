@@ -1,19 +1,7 @@
 """Main-flow API contract tests."""
 
-from fastapi.testclient import TestClient
 
-from app.db.store import store
-from main import app
-
-
-client = TestClient(app)
-
-
-def setup_function():
-    store.reset()
-
-
-def test_login_success():
+def test_login_success(client):
     res = client.post(
         "/api/auth/login",
         json={"username": "home_a", "password": "home123456"},
@@ -26,7 +14,7 @@ def test_login_success():
     assert data["token"].startswith("mock-token-")
 
 
-def test_login_invalid_credentials():
+def test_login_invalid_credentials(client):
     res = client.post(
         "/api/auth/login",
         json={"username": "home_a", "password": "wrong"},
@@ -35,7 +23,7 @@ def test_login_invalid_credentials():
     assert res.status_code == 401
 
 
-def test_devices_list_and_detail():
+def test_devices_list_and_detail(client):
     list_res = client.get("/api/devices")
     assert list_res.status_code == 200
 
@@ -47,7 +35,7 @@ def test_devices_list_and_detail():
     assert detail_res.json()["id"] == devices[0]["id"]
 
 
-def test_attachment_register_and_parse():
+def test_attachment_register_and_parse(client):
     create_res = client.post(
         "/api/attachments",
         json={
@@ -70,7 +58,7 @@ def test_attachment_register_and_parse():
     assert parsed["attachmentType"] == "manual"
 
 
-def test_reminders_list_and_patch():
+def test_reminders_list_and_patch(client):
     list_res = client.get("/api/reminders")
     assert list_res.status_code == 200
 
@@ -86,7 +74,7 @@ def test_reminders_list_and_patch():
     assert patch_res.json()["status"] == "done"
 
 
-def test_fault_records_list_by_device():
+def test_fault_records_list_by_device(client):
     devices_res = client.get("/api/devices")
     assert devices_res.status_code == 200
 
@@ -99,7 +87,7 @@ def test_fault_records_list_by_device():
     assert all(item["deviceId"] == device_id for item in records)
 
 
-def test_agent_run_create_list_get_and_confirm():
+def test_agent_run_create_list_get_and_confirm(client):
     create_res = client.post(
         "/api/agent/runs",
         json={

@@ -1,311 +1,96 @@
-"""In-memory data store — thread-safe dict-based CRUD for v0.1."""
+"""Database-backed storage facade for API routes and agent flows."""
 
 from __future__ import annotations
 
-import copy
 import json
-import random
-import string
-import threading
-from datetime import date, datetime
-from typing import Any, Optional
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.seed import (
-    HOUSEHOLD,
-    SEED_AGENT_RUNS,
-    SEED_ATTACHMENTS,
-    SEED_DEVICES,
-    SEED_FAULT_RECORDS,
-    SEED_MANUAL_CHUNKS,
-    SEED_REMINDERS,
+from app.db.repositories import agent_runs, attachments, devices, fault_records, reminders
+from app.db.repositories.seed_repository import insert_seed_dataset
+from app.db.seed import HOUSEHOLD
+from app.db.models import (
+    AgentRunModel,
+    AttachmentModel,
+    DeviceModel,
+    FaultRecordModel,
+    ManualChunkModel,
+    ReminderModel,
 )
-from app.services.warranty_service import calc_warranty_status, recompute_device_warranty
-
-
-def _gen_id(prefix: str) -> str:
-    chars = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    ts = datetime.now().strftime("%H%M%S")[-4:]
-    return f"{prefix}_{chars}{ts}"
 
 
 def _now_iso() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _today_iso() -> str:
-    return date.today().isoformat()
-
-
-def _deep_copy(obj):
-    return copy.deepcopy(obj)
-
-
 class Store:
-    """Thread-safe in-memory data store."""
+    """Database-backed storage facade for API routes and agent flows."""
 
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._db: dict[str, list[dict]] = {}
-        self._seed()
+    def list_devices(self, db: Session) -> list[dict]:
+        return [devices.to_schema(row) for row in devices.list_devices(db, settings.HOUSEHOLD_ID)]
 
-    # ── Seed / Reset ────────────────────────────────────────────────────
+    def get_device(self, db: Session, device_id: str) -> Optional[dict]:
+        row = devices.get_device(db, device_id)
+        return devices.to_schema(row) if row else None
 
-    def _seed(self):
-        self._db = {
-            "devices": _deep_copy(SEED_DEVICES),
-            "attachments": _deep_copy(SEED_ATTACHMENTS),
-            "reminders": _deep_copy(SEED_REMINDERS),
-            "faultRecords": _deep_copy(SEED_FAULT_RECORDS),
-            "agentRuns": _deep_copy(SEED_AGENT_RUNS),
-            "manualChunks": _deep_copy(SEED_MANUAL_CHUNKS),
-        }
+    def create_device(self, db: Session, data: dict, user_id: str) -> dict:
+        return devices.create_device(db, data, user_id, settings.HOUSEHOLD_ID)
 
-    def reset(self):
-        with self._lock:
-            self._seed()
+    def patch_device(self, db: Session, device_id: str, patch: dict, user_id: str) -> Optional[dict]:
+        return devices.patch_device(db, device_id, patch, user_id)
 
-    # ── Devices ──────────────────────────────────────────────────────────
+    def list_attachments_by_device(self, db: Session, device_id: str) -> list[dict]:
+        return attachments.list_attachments_by_device(db, device_id)
 
-    def list_devices(self) -> list[dict]:
-        with self._lock:
-            return [
-                recompute_device_warranty(d)
-                for d in self._db["devices"]
-                if d["householdId"] == settings.HOUSEHOLD_ID
-            ]
+    def get_attachment(self, db: Session, att_id: str) -> Optional[dict]:
+        return attachments.get_attachment(db, att_id)
 
-    def get_device(self, device_id: str) -> Optional[dict]:
-        with self._lock:
-            for d in self._db["devices"]:
-                if d["id"] == device_id:
-                    return recompute_device_warranty(d)
-        return None
+    def register_attachment(self, db: Session, input_data: dict, user_id: str) -> dict:
+        return attachments.register_attachment(db, input_data, user_id, settings.HOUSEHOLD_ID)
 
-    def create_device(self, data: dict, user_id: str) -> dict:
-        with self._lock:
-            now = _now_iso()
-            ws = calc_warranty_status(data.get("purchaseDate"), data.get("warrantyMonths"))
-            device = {
-                "id": _gen_id("dev"),
-                "householdId": settings.HOUSEHOLD_ID,
-                "name": data.get("name", "未命名设备"),
-                "brand": data.get("brand"),
-                "model": data.get("model"),
-                "category": data.get("category", "未分类"),
-                "purchaseDate": data.get("purchaseDate"),
-                "warrantyMonths": data.get("warrantyMonths"),
-                "warrantyExpireDate": ws.expire_date,
-                "warrantyStatus": ws.status,
-                "serialNumber": data.get("serialNumber"),
-                "purchaseChannel": data.get("purchaseChannel"),
-                "servicePhone": data.get("servicePhone"),
-                "notes": data.get("notes"),
-                "createdByUserId": user_id,
-                "createdAt": now,
-                "updatedAt": now,
-            }
-            self._db["devices"].append(device)
-            return _deep_copy(device)
-
-    def patch_device(self, device_id: str, patch: dict, user_id: str) -> Optional[dict]:
-        with self._lock:
-            for i, d in enumerate(self._db["devices"]):
-                if d["id"] == device_id:
-                    updated = {**d, **patch, "id": d["id"], "householdId": d["householdId"],
-                               "updatedByUserId": user_id, "updatedAt": _now_iso()}
-                    ws = calc_warranty_status(updated.get("purchaseDate"), updated.get("warrantyMonths"))
-                    updated["warrantyExpireDate"] = ws.expire_date
-                    updated["warrantyStatus"] = ws.status
-                    self._db["devices"][i] = updated
-                    return _deep_copy(recompute_device_warranty(updated))
-        return None
-
-    # ── Attachments ──────────────────────────────────────────────────────
-
-    def list_attachments_by_device(self, device_id: str) -> list[dict]:
-        with self._lock:
-            return [a for a in self._db["attachments"] if a.get("deviceId") == device_id]
-
-    def get_attachment(self, att_id: str) -> Optional[dict]:
-        with self._lock:
-            for a in self._db["attachments"]:
-                if a["id"] == att_id:
-                    return _deep_copy(a)
-        return None
-
-    def register_attachment(self, input_data: dict, user_id: str) -> dict:
-        with self._lock:
-            mime = input_data.get("mimeType", "")
-            if mime.startswith("image/"):
-                file_type = "image"
-            elif mime == "application/pdf":
-                file_type = "pdf"
-            else:
-                file_type = "other"
-            att = {
-                "id": _gen_id("att"),
-                "householdId": settings.HOUSEHOLD_ID,
-                "filename": input_data["filename"],
-                "mimeType": mime,
-                "fileType": file_type,
-                "attachmentType": input_data.get("attachmentType") or "other",
-                "sizeBytes": input_data.get("sizeBytes"),
-                "parseStatus": "pending",
-                "createdByUserId": user_id,
-                "createdAt": _now_iso(),
-            }
-            self._db["attachments"].append(att)
-            return _deep_copy(att)
-
-    def parse_attachment(self, att_id: str) -> dict:
-        """Mock parse — infer attachment type and summary from filename."""
-        with self._lock:
-            for i, att in enumerate(self._db["attachments"]):
-                if att["id"] == att_id:
-                    fn = att["filename"].lower()
-                    attachment_type = att["attachmentType"]
-                    summary = "已解析文件内容"
-                    if "订单" in fn or "order" in fn:
-                        attachment_type = "order_screenshot"
-                        summary = "识别到订单截图：商品名称、购买日期、订单号、金额"
-                    elif "发票" in fn or "invoice" in fn:
-                        attachment_type = "invoice"
-                        summary = "识别到发票：购买方、商品明细、开票日期"
-                    elif "说明书" in fn or "manual" in fn or att["mimeType"] == "application/pdf":
-                        attachment_type = "manual"
-                        summary = "已提取说明书文本，可索引为问答来源"
-                    elif "保修" in fn or "warranty" in fn:
-                        attachment_type = "warranty_card"
-                        summary = "识别到保修卡：保修期、售后电话"
-                    elif "故障" in fn or "fault" in fn:
-                        attachment_type = "device_photo"
-                        summary = "识别到故障照片"
-                    updated = {**att, "attachmentType": attachment_type,
-                               "parseStatus": "parsed", "parseSummary": summary}
-                    self._db["attachments"][i] = updated
-                    return _deep_copy(updated)
-        raise KeyError(f"Attachment {att_id} not found")
+    def parse_attachment(self, db: Session, att_id: str) -> dict:
+        return attachments.parse_attachment(db, att_id)
 
     def set_attachment_parse_status(
-        self, att_id: str, status: str, error: Optional[str] = None
+        self, db: Session, att_id: str, status: str, error: Optional[str] = None
     ) -> Optional[dict]:
-        with self._lock:
-            for i, a in enumerate(self._db["attachments"]):
-                if a["id"] == att_id:
-                    self._db["attachments"][i] = {
-                        **a, "parseStatus": status, "parseError": error,
-                    }
-                    return _deep_copy(self._db["attachments"][i])
-        return None
+        return attachments.set_attachment_parse_status(db, att_id, status, error)
 
-    def bind_attachments_to_device(self, att_ids: list[str], device_id: str):
-        with self._lock:
-            self._db["attachments"] = [
-                {**a, "deviceId": device_id} if a["id"] in att_ids else a
-                for a in self._db["attachments"]
-            ]
+    def bind_attachments_to_device(self, db: Session, att_ids: list[str], device_id: str) -> None:
+        attachments.bind_attachments_to_device(db, att_ids, device_id)
 
-    # ── Reminders ────────────────────────────────────────────────────────
+    def list_reminders(self, db: Session) -> list[dict]:
+        return reminders.list_reminders(db, settings.HOUSEHOLD_ID)
 
-    def list_reminders(self) -> list[dict]:
-        with self._lock:
-            items = [r for r in self._db["reminders"]
-                     if r["householdId"] == settings.HOUSEHOLD_ID]
-            return sorted(items, key=lambda r: r["dueDate"])
+    def patch_reminder(self, db: Session, reminder_id: str, patch: dict, user_id: str) -> Optional[dict]:
+        return reminders.patch_reminder(db, reminder_id, patch, user_id)
 
-    def patch_reminder(self, reminder_id: str, patch: dict, user_id: str) -> Optional[dict]:
-        with self._lock:
-            for i, r in enumerate(self._db["reminders"]):
-                if r["id"] == reminder_id:
-                    updated = {**r, **patch, "id": r["id"],
-                               "updatedByUserId": user_id, "updatedAt": _now_iso()}
-                    self._db["reminders"][i] = updated
-                    return _deep_copy(updated)
-        return None
+    def create_reminder(self, db: Session, data: dict, user_id: str) -> dict:
+        return reminders.create_reminder(db, data, user_id, settings.HOUSEHOLD_ID)
 
-    def create_reminder(self, data: dict, user_id: str) -> dict:
-        with self._lock:
-            now = _now_iso()
-            r = {
-                "id": _gen_id("rem"),
-                "householdId": settings.HOUSEHOLD_ID,
-                "deviceId": data.get("deviceId"),
-                "type": data.get("type", "custom"),
-                "title": data.get("title", "提醒"),
-                "description": data.get("description"),
-                "dueDate": data.get("dueDate", _today_iso()),
-                "status": "pending",
-                "source": data.get("source", "agent"),
-                "sourceAgentRunId": data.get("sourceAgentRunId"),
-                "createdByUserId": user_id,
-                "createdAt": now,
-                "updatedAt": now,
-            }
-            self._db["reminders"].append(r)
-            return _deep_copy(r)
+    def list_fault_records_by_device(self, db: Session, device_id: str) -> list[dict]:
+        return fault_records.list_fault_records_by_device(db, device_id)
 
-    # ── Fault Records ────────────────────────────────────────────────────
+    def create_fault_record(self, db: Session, data: dict, user_id: str) -> dict:
+        return fault_records.create_fault_record(db, data, user_id, settings.HOUSEHOLD_ID)
 
-    def list_fault_records_by_device(self, device_id: str) -> list[dict]:
-        with self._lock:
-            return [f for f in self._db["faultRecords"] if f["deviceId"] == device_id]
+    def list_agent_runs(self, db: Session) -> list[dict]:
+        return agent_runs.list_agent_runs(db, settings.HOUSEHOLD_ID)
 
-    def create_fault_record(self, data: dict, user_id: str) -> dict:
-        with self._lock:
-            now = _now_iso()
-            fr = {
-                "id": _gen_id("fault"),
-                "householdId": settings.HOUSEHOLD_ID,
-                "deviceId": data.get("deviceId", ""),
-                "agentRunId": data.get("agentRunId"),
-                "type": data.get("type", "troubleshooting"),
-                "title": data.get("title", "故障记录"),
-                "symptom": data.get("symptom", ""),
-                "riskLevel": data.get("riskLevel", "low"),
-                "summary": data.get("summary", ""),
-                "serviceScript": data.get("serviceScript"),
-                "occurredAt": data.get("occurredAt", now),
-                "createdByUserId": user_id,
-                "createdAt": now,
-            }
-            self._db["faultRecords"].append(fr)
-            return _deep_copy(fr)
+    def get_agent_run(self, db: Session, run_id: str) -> Optional[dict]:
+        return agent_runs.get_agent_run(db, run_id)
 
-    # ── Agent Runs ───────────────────────────────────────────────────────
+    def upsert_agent_run(self, db: Session, run: dict) -> None:
+        agent_runs.upsert_agent_run(db, run)
 
-    def list_agent_runs(self) -> list[dict]:
-        with self._lock:
-            items = [r for r in self._db["agentRuns"]
-                     if r["householdId"] == settings.HOUSEHOLD_ID]
-            return sorted(items, key=lambda r: r["createdAt"], reverse=True)
+    def get_manual_chunks(self, db: Session, device_id: str) -> list[dict]:
+        return agent_runs.get_manual_chunks(db, device_id)
 
-    def get_agent_run(self, run_id: str) -> Optional[dict]:
-        with self._lock:
-            for r in self._db["agentRuns"]:
-                if r["id"] == run_id:
-                    return _deep_copy(r)
-        return None
-
-    def upsert_agent_run(self, run: dict):
-        with self._lock:
-            for i, r in enumerate(self._db["agentRuns"]):
-                if r["id"] == run["id"]:
-                    self._db["agentRuns"][i] = run
-                    return
-            self._db["agentRuns"].append(run)
-
-    # ── Manual Chunks ────────────────────────────────────────────────────
-
-    def get_manual_chunks(self, device_id: str) -> list[dict]:
-        with self._lock:
-            return [c for c in self._db["manualChunks"] if c["deviceId"] == device_id]
-
-    def add_manual_chunk(self, chunk: dict):
-        with self._lock:
-            self._db["manualChunks"].append(chunk)
-
-    # ── Settings / Export ────────────────────────────────────────────────
+    def add_manual_chunk(self, db: Session, chunk: dict) -> None:
+        agent_runs.add_manual_chunk(db, chunk)
 
     def get_settings(self, user_id: str) -> dict:
         return {
@@ -315,19 +100,34 @@ class Store:
             "exportAvailable": True,
         }
 
-    def export_data(self) -> str:
-        with self._lock:
-            data = {
-                "exportedAt": _now_iso(),
-                "household": HOUSEHOLD,
-                "devices": self._db["devices"],
-                "attachments": self._db["attachments"],
-                "reminders": self._db["reminders"],
-                "faultRecords": self._db["faultRecords"],
-                "agentRuns": self._db["agentRuns"],
-            }
+    def export_data(self, db: Session) -> str:
+        data = {
+            "exportedAt": _now_iso(),
+            "household": HOUSEHOLD,
+            "devices": self.list_devices(db),
+            "attachments": [
+                attachments.to_schema(r)
+                for r in db.query(AttachmentModel).all()
+            ],
+            "reminders": self.list_reminders(db),
+            "faultRecords": [
+                fault_records.to_schema(r)
+                for r in db.query(FaultRecordModel).all()
+            ],
+            "agentRuns": self.list_agent_runs(db),
+        }
         return json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
+    def reset(self, db: Session) -> None:
+        db.query(ManualChunkModel).delete()
+        db.query(AgentRunModel).delete()
+        db.query(FaultRecordModel).delete()
+        db.query(ReminderModel).delete()
+        db.query(AttachmentModel).delete()
+        db.query(DeviceModel).delete()
+        db.commit()
+        insert_seed_dataset(db)
+        db.commit()
 
-# Singleton store
+
 store = Store()

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
 
@@ -9,6 +9,20 @@ const apiDir = path.join(rootDir, "apps", "api");
 const pythonCommand = isWindows
   ? path.join(apiDir, ".venv", "Scripts", "python.exe")
   : path.join(apiDir, ".venv", "bin", "python");
+
+function runChecked(command, args, options = {}) {
+  const result = spawnSync(
+    command,
+    args,
+    Object.assign({ stdio: "inherit", shell: isWindows }, options),
+  );
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+}
+
+runChecked(pythonCommand, ["-m", "alembic", "upgrade", "head"], { cwd: apiDir });
+runChecked(pythonCommand, ["-m", "app.db.seed_runtime"], { cwd: apiDir });
 
 function canListen(port, host) {
   return new Promise((resolve) => {
