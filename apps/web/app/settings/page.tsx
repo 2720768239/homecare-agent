@@ -44,10 +44,10 @@ function SettingsContent() {
     router.replace('/login');
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     setExporting(true);
     try {
-      const json = api.exportData();
+      const json = await api.exportData();
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -60,9 +60,9 @@ function SettingsContent() {
     }
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     if (confirm('确定要重置 Demo 数据吗？这将恢复所有设备、提醒和执行记录到初始状态。')) {
-      api.resetDemoData();
+      await api.resetDemoData();
       window.location.reload();
     }
   };

@@ -125,9 +125,11 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
   },
 
   requestSaveFault: async (runId) => {
+    const session = useAuthStore.getState().session;
+    if (!session) return;
     set({ running: true });
     try {
-      const run = await api.requestSaveFaultRecordConfirmation(runId);
+      const run = await api.requestSaveFaultRecordConfirmation(runId, session.userId);
       set((s) => ({
         messages: s.messages.map((m) =>
           m.role === 'agent' && m.run.id === runId ? { ...m, run } : m,

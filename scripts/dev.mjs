@@ -52,6 +52,7 @@ const web = spawn(
   {
     env: {
       ...process.env,
+      NEXT_PUBLIC_USE_MOCK: "false",
       NEXT_PUBLIC_API_BASE_URL: apiBaseUrl,
     },
     stdio: ["inherit", "pipe", "pipe"],

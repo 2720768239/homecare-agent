@@ -5,7 +5,15 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import agent_runs, attachments, auth, devices, reminders, settings
+from app.api.routes import (
+    agent_runs,
+    attachments,
+    auth,
+    devices,
+    fault_records,
+    reminders,
+    settings,
+)
 from app.core.config import settings as app_settings
 
 app = FastAPI(title=app_settings.API_TITLE, version=app_settings.API_VERSION)
@@ -23,6 +31,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(devices.router, prefix="/api")
 app.include_router(attachments.router, prefix="/api")
+app.include_router(fault_records.router, prefix="/api")
 app.include_router(reminders.router, prefix="/api")
 app.include_router(agent_runs.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")

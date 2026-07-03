@@ -8,6 +8,7 @@ import type {
   Attachment,
   AttachmentType,
   Device,
+  FaultRecord,
   Reminder,
   Session,
   Settings,
@@ -32,9 +33,18 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw body;
+    throw body?.detail ?? body;
   }
   return res.json();
+}
+
+function withQuery(path: string, params: Record<string, string | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, value);
+  }
+  const queryString = query.toString();
+  return queryString ? `${path}?${queryString}` : path;
 }
 
 // In-memory session for real backend mode
@@ -91,7 +101,7 @@ export const api = {
   },
   patchDevice(id: string, patch: Partial<Device>, userId: string): Promise<Device | undefined> {
     if (USE_MOCK) return delay(mock.patchDevice(id, patch, userId));
-    return apiFetch<Device>(`/api/devices/${id}`, {
+    return apiFetch<Device>(withQuery(`/api/devices/${id}`, { userId }), {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
@@ -107,7 +117,7 @@ export const api = {
     userId: string,
   ): Promise<Attachment> {
     if (USE_MOCK) return delay(mock.registerAttachment(input, userId), 60);
-    return apiFetch<Attachment>('/api/attachments', {
+    return apiFetch<Attachment>(withQuery('/api/attachments', { userId }), {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -122,10 +132,10 @@ export const api = {
     error?: string,
   ): Promise<void> {
     if (USE_MOCK) { mock.setAttachmentParseStatus(id, status, error); return delay(undefined, 60); }
-    return apiFetch<void>(`/api/attachments/${id}/status`, {
+    return apiFetch<Attachment>(`/api/attachments/${id}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ parseStatus: status, parseError: error }),
-    });
+    }).then(() => undefined);
   },
 
   // ---- reminders ----
@@ -135,18 +145,16 @@ export const api = {
   },
   patchReminder(id: string, patch: Partial<Reminder>, userId: string): Promise<Reminder | undefined> {
     if (USE_MOCK) return delay(mock.patchReminder(id, patch, userId));
-    return apiFetch<Reminder>(`/api/reminders/${id}`, {
+    return apiFetch<Reminder>(withQuery(`/api/reminders/${id}`, { userId }), {
       method: 'PATCH',
       body: JSON.stringify(patch),
     });
   },
 
   // ---- fault records ----
-  listFaultRecordsByDevice(deviceId: string) {
+  listFaultRecordsByDevice(deviceId: string): Promise<FaultRecord[]> {
     if (USE_MOCK) return delay(mock.listFaultRecordsByDevice(deviceId));
-    // Real backend doesn't have a dedicated fault records list endpoint in v0.1
-    // Fall back to agent runs
-    return apiFetch<any[]>(`/api/agent/runs`);
+    return apiFetch<FaultRecord[]>(`/api/fault-records/by-device/${deviceId}`);
   },
 
   // ---- agent runs ----
@@ -167,7 +175,7 @@ export const api = {
         intentHint: input.intentHint,
         attachmentIds: input.attachmentIds,
         context: input.context,
-        userId: 'user_home_a',
+        userId: input.userId,
       }),
     });
   },
@@ -178,30 +186,33 @@ export const api = {
       body: JSON.stringify(input),
     });
   },
-  requestSaveFaultRecordConfirmation(runId: string): Promise<AgentRun> {
+  requestSaveFaultRecordConfirmation(runId: string, userId: string): Promise<AgentRun> {
     if (USE_MOCK) return delay(mock.requestSaveFaultRecordConfirmation(runId), 200);
-    // Real backend: confirm with save_fault_record action
     return apiFetch<AgentRun>(`/api/agent/runs/${runId}/confirm`, {
       method: 'POST',
-      body: JSON.stringify({ action: 'save_fault_record' }),
+      body: JSON.stringify({ action: 'save_fault_record', userId }),
     });
   },
 
   // ---- settings ----
   getSettings(userId: string): Promise<Settings> {
     if (USE_MOCK) return delay(mock.getSettings(userId));
-    return apiFetch<Settings>('/api/settings');
+    return apiFetch<Settings>(withQuery('/api/settings', { userId }));
   },
 
   // ---- utils ----
-  resetDemoData(): void {
-    if (USE_MOCK) { mock.resetDemoData(); return; }
-    apiFetch('/api/settings/reset', { method: 'POST' }).catch(() => {});
+  resetDemoData(): Promise<void> {
+    if (USE_MOCK) {
+      mock.resetDemoData();
+      return Promise.resolve();
+    }
+    return apiFetch<{ ok: boolean }>('/api/settings/reset', { method: 'POST' }).then(() => undefined);
   },
-  exportData(): string {
-    if (USE_MOCK) return mock.exportData();
-    // Real backend: use export endpoint
-    return '{}'; // Fallback
+  exportData(): Promise<string> {
+    if (USE_MOCK) return Promise.resolve(mock.exportData());
+    return apiFetch<Record<string, unknown>>('/api/settings/export').then((data) =>
+      JSON.stringify(data, null, 2),
+    );
   },
 };
 
