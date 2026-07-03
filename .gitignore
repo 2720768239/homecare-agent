@@ -31,6 +31,7 @@ apps/api/.venv/
 
 # SQLite local data
 apps/api/data/
+/data/
 
 # Coverage
 coverage/
